@@ -122,12 +122,19 @@ function setOptions(options) {
 // a JSON message to send to the watch face.
 function prepareConfiguration(serialized_settings) {
   var settings = JSON.parse(serialized_settings);
+  // appKey 8 = CONF_SHOWSTEPS. Defaults on so Wristquake's step display is
+  // visible out of the box when running against the original upstream config
+  // page (which has no show_steps checkbox). Override by setting
+  // `show_steps: false` in localStorage or via a future Clay config UI.
+  var showSteps = (typeof settings.show_steps === 'undefined') ? 1
+                : (settings.show_steps ? 1 : 0);
   return {
     "0": alignment[settings.text_align],
     "1": settings.bluetooth ? 1 : 0,
     "2": weather[settings.weather],
     "6": temp_unit[settings.temp_unit],
-    "7": style[settings.text_style]
+    "7": style[settings.text_style],
+    "8": showSteps
   };
 }
 

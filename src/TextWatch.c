@@ -34,7 +34,10 @@ static bool bluetooth = true;
 static bool bluetooth_old = true;
 static uint8_t weather = 15;
 static bool weather_force_update = false;
-static bool show_steps = false;
+// Default on so the step count is visible out of the box on PT2 even without
+// a Clay-based config UI. The upstream config page (which we don't control)
+// has no show_steps checkbox; users can flip this off via persist if needed.
+static bool show_steps = true;
 static int current_steps = 0;
 // Set from window bounds at window_load; defaults match original 144x168 in case anything
 // reads them before window_load runs.
