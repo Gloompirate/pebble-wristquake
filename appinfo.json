@@ -3,6 +3,7 @@
         "alignment": 0,
         "bluetooth": 1,
         "icon": 3,
+        "showSteps": 8,
         "style": 7,
         "temperatureC": 4,
         "temperatureF": 5,
@@ -11,18 +12,26 @@
     },
     "capabilities": [
         "location",
-        "configurable"
+        "configurable",
+        "health"
     ],
-    "companyName": "Ben Nguyen",
-    "longName": "Ultimate Text Watch",
+    "companyName": "Gloompirate",
+    "longName": "Wristquake",
     "projectType": "native",
     "resources": {
         "media": []
     },
-    "shortName": "Ultimate Text Watch",
-    "uuid": "ad75ca5b-7256-463c-b770-fb4b8152cc51",
-    "versionCode": 4,
-    "versionLabel": "2.2",
+    "shortName": "Wristquake",
+    "targetPlatforms": [
+        "aplite",
+        "basalt",
+        "chalk",
+        "diorite",
+        "emery"
+    ],
+    "uuid": "6461e2ab-6fd8-4572-9b6d-b98e7e424b3a",
+    "versionCode": 1,
+    "versionLabel": "0.1.0",
     "watchapp": {
         "watchface": true
     }

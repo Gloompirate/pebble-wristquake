@@ -34,7 +34,12 @@ static bool bluetooth = true;
 static bool bluetooth_old = true;
 static uint8_t weather = 15;
 static bool weather_force_update = false;
-static bool invert = false;
+static bool show_steps = false;
+static int current_steps = 0;
+// Set from window bounds at window_load; defaults match original 144x168 in case anything
+// reads them before window_load runs.
+static int16_t screen_w = 144;
+static int16_t screen_h = 168;
 static Language lang = EN_GB;
 
 static Window *window;
@@ -58,6 +63,7 @@ typedef struct {
 typedef struct {
   char  topbar[25];
   char  bottombarL[10];
+  char  bottombarC[12];
   char  bottombarR[4];
 } StatusBars;
 
@@ -65,7 +71,11 @@ static StatusBars status_bars;
 
 static TextLine topbar;
 static TextLine bottombarL;
+static TextLine bottombarC;
 static TextLine bottombarR;
+// Small "BT" indicator shown when bluetooth drops. Replaces the upstream's
+// InverterLayer trick, which was removed from the SDK for color displays.
+static TextLayer *bt_indicator;
 
 static AppTimer *shake_timeout = NULL;
 
@@ -85,6 +95,7 @@ static bool temp_unit = true; // true==C false==F
 #define  WEATHER_TEMPERATURE_F_KEY  5
 #define  WEATHER_TEMPERATURE_UNIT   6
 #define  CONF_TEXTSTYLE             7
+#define  CONF_SHOWSTEPS             8
   
 static void display_initial_time(struct tm *t);
 static void display_time(struct tm *t);
@@ -92,7 +103,6 @@ static void display_time(struct tm *t);
 /////////////////////////////////////////////////ZECOJ/////////////////////////////////////////////////
 
 static Line lines[NUM_LINES];
-static InverterLayer *inverter_layer;
 
 static struct tm *t;
 
@@ -158,17 +168,27 @@ void info_lines(char *load_status) {
   strcpy(status_bars.bottombarL, "");
   strftime(status_bars.bottombarL, sizeof(status_bars.bottombarL), "%a %e", t);
   snprintf(status_bars.bottombarR, sizeof(status_bars.bottombarR), "%d%%", charge_state.charge_percent);
-  
+
+  // Center slot: step count, only when enabled and the platform has Pebble Health.
+  status_bars.bottombarC[0] = '\0';
+#if defined(PBL_HEALTH)
+  if (show_steps) {
+    snprintf(status_bars.bottombarC, sizeof(status_bars.bottombarC), "%d", current_steps);
+  }
+#endif
+
   status_bars.bottombarL[0]=tolower((unsigned char)status_bars.bottombarL[0]);
 
   text_layer_set_text(topbar.layer[0], status_bars.topbar);
   text_layer_set_text(bottombarL.layer[0], status_bars.bottombarL);
+  text_layer_set_text(bottombarC.layer[0], status_bars.bottombarC);
   text_layer_set_text(bottombarR.layer[0], status_bars.bottombarR);
 }
 
 void hide_bars () {
   layer_set_hidden(text_layer_get_layer(topbar.layer[0]), true);
   layer_set_hidden(text_layer_get_layer(bottombarL.layer[0]), true);
+  layer_set_hidden(text_layer_get_layer(bottombarC.layer[0]), true);
   layer_set_hidden(text_layer_get_layer(bottombarR.layer[0]), true);
   weather_force_update = false;
   shake_timeout = NULL;
@@ -177,6 +197,7 @@ void show_bars ()  {
   info_lines("");
   layer_set_hidden(text_layer_get_layer(topbar.layer[0]), false);
   layer_set_hidden(text_layer_get_layer(bottombarL.layer[0]), false);
+  layer_set_hidden(text_layer_get_layer(bottombarC.layer[0]), false);
   layer_set_hidden(text_layer_get_layer(bottombarR.layer[0]), false);
 }
 void wrist_flick_handler(AccelAxisType axis, int32_t direction) {
@@ -197,7 +218,6 @@ void wrist_flick_handler(AccelAxisType axis, int32_t direction) {
 }
 
 void bluetooth_connection_handler(bool connected) {
-  //APP_LOG(APP_LOG_LEVEL_DEBUG, "bluetooth_connection_handler called");
   if(bluetooth){
     if (!bt_connect_toggle && connected) {
       bt_connect_toggle = true;
@@ -207,11 +227,11 @@ void bluetooth_connection_handler(bool connected) {
       bt_connect_toggle = false;
       vibes_short_pulse();
     }
-    layer_set_hidden(inverter_layer_get_layer(inverter_layer), bt_connect_toggle);
+    // bt_connect_toggle: true = connected (hide indicator), false = disconnected (show)
+    layer_set_hidden(text_layer_get_layer(bt_indicator), bt_connect_toggle);
   }
   else {
-    //APP_LOG(APP_LOG_LEVEL_DEBUG, "I'm still here, just ignoring bluetooth events");
-    layer_set_hidden(inverter_layer_get_layer(inverter_layer), true);
+    layer_set_hidden(text_layer_get_layer(bt_indicator), true);
   }
 }
 
@@ -261,10 +281,9 @@ static void sync_tuple_changed_callback(const uint32_t key, const Tuple* new_tup
         bluetooth = new_tuple->value->uint8 == 1;
         persist_write_bool(CONF_BLUETOOTH, bluetooth);
         if (bluetooth && !bluetooth_old) {
-          //APP_LOG(APP_LOG_LEVEL_DEBUG, "re-subscribing");
           bluetooth_connection_service_subscribe(bluetooth_connection_handler);
           bt_connect_toggle = bluetooth_connection_service_peek();
-          layer_set_hidden(inverter_layer_get_layer(inverter_layer), bt_connect_toggle);
+          layer_set_hidden(text_layer_get_layer(bt_indicator), bt_connect_toggle);
         }
         if (!bluetooth && bluetooth_old) {
           //APP_LOG(APP_LOG_LEVEL_DEBUG, "unsubscribing");
@@ -322,6 +341,14 @@ static void sync_tuple_changed_callback(const uint32_t key, const Tuple* new_tup
         persist_write_bool(WEATHER_TEMPERATURE_UNIT,temp_unit);
       }
       break;
+
+    case CONF_SHOWSTEPS:
+      if ((new_tuple->value->uint8 == 1) != show_steps) {
+        APP_LOG(APP_LOG_LEVEL_DEBUG, "CONF_SHOWSTEPS: I'm called");
+        show_steps = new_tuple->value->uint8 == 1;
+        persist_write_bool(CONF_SHOWSTEPS, show_steps);
+      }
+      break;
     }
 }
 
@@ -334,7 +361,7 @@ static void animationStoppedHandler(struct Animation *animation, bool finished, 
 {
   TextLayer *current = (TextLayer *)context;
   GRect rect = layer_get_frame((Layer *)current);
-  rect.origin.x = 144;
+  rect.origin.x = screen_w;
   layer_set_frame((Layer *)current, rect);
 }
 
@@ -356,7 +383,7 @@ static void makeAnimationsForLayer(Line *line, int delay)
 
   // Configure animation for current layer to move out
   GRect rect = layer_get_frame((Layer *)current);
-  rect.origin.x =  -144;
+  rect.origin.x = -screen_w;
   line->animation1 = property_animation_create_layer_frame((Layer *)current, NULL, &rect);
   animation_set_duration(&line->animation1->animation, ANIMATION_DURATION);
   animation_set_delay(&line->animation1->animation, delay);
@@ -456,12 +483,13 @@ static int configureLayersForText(char text[NUM_LINES][BUFFER_SIZE], char format
   numLines = i;
 
   // Calculate y position of top Line
-  int ypos = (168 - numLines * ROW_HEIGHT) / 2 - TOP_MARGIN;
+  int ypos = (screen_h - numLines * ROW_HEIGHT) / 2 - TOP_MARGIN;
 
-  // Set y positions for the lines
+  // Set y positions for the lines. Lines start off-screen to the right (x = screen_w);
+  // the slide-in animation moves them to x = 0.
   for (int i = 0; i < numLines; i++)
   {
-    layer_set_frame((Layer *)lines[i].nextLayer, GRect(144, ypos, 144, 50));
+    layer_set_frame((Layer *)lines[i].nextLayer, GRect(screen_w, ypos, screen_w, 50));
     ypos += ROW_HEIGHT;
   }
 
@@ -601,8 +629,8 @@ static void handle_minute_tick(struct tm *tick_time, TimeUnits units_changed)
 static void init_line(Line* line)
 {
   // Create layers with dummy position to the right of the screen
-  line->currentLayer = text_layer_create(GRect(144, 0, 144, 50));
-  line->nextLayer = text_layer_create(GRect(144, 0, 144, 50));
+  line->currentLayer = text_layer_create(GRect(screen_w, 0, screen_w, 50));
+  line->nextLayer = text_layer_create(GRect(screen_w, 0, screen_w, 50));
 
   // Configure a style
   configureLightLayer(line->currentLayer);
@@ -626,10 +654,22 @@ static void destroy_line(Line* line)
   text_layer_destroy(line->nextLayer);
 }
 
+#if defined(PBL_HEALTH)
+static void health_handler(HealthEventType event, void *context)
+{
+  if (event == HealthEventSignificantUpdate || event == HealthEventMovementUpdate) {
+    HealthValue v = health_service_sum_today(HealthMetricStepCount);
+    current_steps = (int)v;
+  }
+}
+#endif
+
 static void window_load(Window *window)
 {
   Layer *window_layer = window_get_root_layer(window);
-  GRect bounds = layer_get_frame(window_layer);
+  GRect bounds = layer_get_bounds(window_layer);
+  screen_w = bounds.size.w;
+  screen_h = bounds.size.h;
 
   // Init and load lines
   for (int i = 0; i < NUM_LINES; i++)
@@ -640,19 +680,32 @@ static void window_load(Window *window)
   }
   
   /////////////////////////////////////////////////ZECOJ/////////////////////////////////////////////////
-  topbar.layer[0] = text_layer_create(GRect(0, -4, 144, 16));
+  // Status bars: pinned to top edge (topbar) and bottom edge (bottombarL/C/R) of whatever
+  // screen we're on. Left and right fixed-width; center fills the gap so it scales with screen.
+  const int16_t BAR_H = 15;
+  const int16_t BAR_TOP_H = 16;
+  const int16_t L_W = 45;
+  const int16_t R_W = 34;
+
+  topbar.layer[0] = text_layer_create(GRect(0, -4, screen_w, BAR_TOP_H));
   text_layer_set_text_color(topbar.layer[0], GColorWhite);
   text_layer_set_background_color(topbar.layer[0], GColorBlack);
   text_layer_set_font(topbar.layer[0], fonts_get_system_font(FONT_KEY_GOTHIC_14));
   text_layer_set_text_alignment(topbar.layer[0], GTextAlignmentCenter);
-  
-  bottombarL.layer[0] = text_layer_create(GRect(0, 153, 45, 15));
+
+  bottombarL.layer[0] = text_layer_create(GRect(0, screen_h - BAR_H, L_W, BAR_H));
   text_layer_set_text_color(bottombarL.layer[0], GColorWhite);
   text_layer_set_background_color(bottombarL.layer[0], GColorBlack);
   text_layer_set_font(bottombarL.layer[0], fonts_get_system_font(FONT_KEY_GOTHIC_14));
   text_layer_set_text_alignment(bottombarL.layer[0], GTextAlignmentLeft);
-  
-  bottombarR.layer[0] = text_layer_create(GRect(110, 153, 34, 15));
+
+  bottombarC.layer[0] = text_layer_create(GRect(L_W, screen_h - BAR_H, screen_w - L_W - R_W, BAR_H));
+  text_layer_set_text_color(bottombarC.layer[0], GColorWhite);
+  text_layer_set_background_color(bottombarC.layer[0], GColorBlack);
+  text_layer_set_font(bottombarC.layer[0], fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(bottombarC.layer[0], GTextAlignmentCenter);
+
+  bottombarR.layer[0] = text_layer_create(GRect(screen_w - R_W, screen_h - BAR_H, R_W, BAR_H));
   text_layer_set_text_color(bottombarR.layer[0], GColorWhite);
   text_layer_set_background_color(bottombarR.layer[0], GColorBlack);
   text_layer_set_font(bottombarR.layer[0], fonts_get_system_font(FONT_KEY_GOTHIC_14));
@@ -660,11 +713,23 @@ static void window_load(Window *window)
 
   layer_add_child(window_layer, text_layer_get_layer(topbar.layer[0]));
   layer_add_child(window_layer, text_layer_get_layer(bottombarL.layer[0]));
+  layer_add_child(window_layer, text_layer_get_layer(bottombarC.layer[0]));
   layer_add_child(window_layer, text_layer_get_layer(bottombarR.layer[0]));
 
   layer_set_hidden(text_layer_get_layer(topbar.layer[0]), true);
   layer_set_hidden(text_layer_get_layer(bottombarL.layer[0]), true);
+  layer_set_hidden(text_layer_get_layer(bottombarC.layer[0]), true);
   layer_set_hidden(text_layer_get_layer(bottombarR.layer[0]), true);
+
+  // Bluetooth-down indicator, top-right corner. Shown only while disconnected.
+  bt_indicator = text_layer_create(GRect(screen_w - 14, 0, 14, 16));
+  text_layer_set_text(bt_indicator, "BT");
+  text_layer_set_text_color(bt_indicator, GColorWhite);
+  text_layer_set_background_color(bt_indicator, GColorBlack);
+  text_layer_set_font(bt_indicator, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_text_alignment(bt_indicator, GTextAlignmentRight);
+  layer_add_child(window_layer, text_layer_get_layer(bt_indicator));
+  layer_set_hidden(text_layer_get_layer(bt_indicator), true);
 
   // prepare the initial values of your data
     Tuplet initial_values[] = {
@@ -673,6 +738,7 @@ static void window_load(Window *window)
         TupletInteger(CONF_BLUETOOTH, (uint8_t) bluetooth ? 1 : 0),
         TupletInteger(CONF_WEATHER,   (uint8_t) weather),
         TupletInteger(WEATHER_TEMPERATURE_UNIT, (bool) temp_unit),
+        TupletInteger(CONF_SHOWSTEPS, (uint8_t) (show_steps ? 1 : 0)),
         MyTupletCString(WEATHER_ICON_KEY, weather_str),
         MyTupletCString(WEATHER_TEMPERATURE_C_KEY, temp_c_str),
         MyTupletCString(WEATHER_TEMPERATURE_F_KEY, temp_f_str)
@@ -680,13 +746,7 @@ static void window_load(Window *window)
     // initialize the syncronization
     app_sync_init(&sync, sync_buffer, sizeof(sync_buffer), initial_values, ARRAY_LENGTH(initial_values),
         sync_tuple_changed_callback, sync_error_callback, NULL);
-    //send_cmd();
 
-  /////////////////////////////////////////////////ZECOJ/////////////////////////////////////////////////
-  inverter_layer = inverter_layer_create(bounds);
-  layer_set_hidden(inverter_layer_get_layer(inverter_layer), !invert);
-  layer_add_child(window_layer, inverter_layer_get_layer(inverter_layer));
-  
   // Configure time on init
   time_t raw_time;
 
@@ -705,8 +765,9 @@ static void window_unload(Window *window)
   //layer_destroy(text_layer_get_layer(bottombarR.layer[0]));
   text_layer_destroy(topbar.layer[0]);
   text_layer_destroy(bottombarL.layer[0]);
+  text_layer_destroy(bottombarC.layer[0]);
   text_layer_destroy(bottombarR.layer[0]);
-  inverter_layer_destroy(inverter_layer);
+  text_layer_destroy(bt_indicator);
 
   for (int i = 0; i < NUM_LINES; i++)
   {
@@ -755,6 +816,10 @@ static void handle_init() {
   {
     temp_unit=persist_read_bool(WEATHER_TEMPERATURE_UNIT);
   }
+  if (persist_exists(CONF_SHOWSTEPS))
+  {
+    show_steps = persist_read_bool(CONF_SHOWSTEPS);
+  }
 
   window = window_create();
   window_set_background_color(window, GColorBlack);
@@ -774,13 +839,21 @@ static void handle_init() {
   if (bluetooth) {
     bluetooth_connection_service_subscribe(bluetooth_connection_handler);
     bt_connect_toggle = bluetooth_connection_service_peek();
-    layer_set_hidden(inverter_layer_get_layer(inverter_layer), bt_connect_toggle);
+    layer_set_hidden(text_layer_get_layer(bt_indicator), bt_connect_toggle);
   }
 
   // Subscribe to shake events
   accel_tap_service_subscribe(wrist_flick_handler);
   accel_service_set_sampling_rate(ACCEL_SAMPLING_10HZ);
-  
+
+#if defined(PBL_HEALTH)
+  // Pebble Health: available on basalt/chalk/diorite/emery (not aplite). Subscribe and
+  // prime current_steps with today's running total.
+  if (health_service_events_subscribe(health_handler, NULL)) {
+    current_steps = (int)health_service_sum_today(HealthMetricStepCount);
+  }
+#endif
+
   // to sync watch fields
   app_message_open(app_message_inbox_size_maximum(), app_message_outbox_size_maximum());
   /////////////////////////////////////////////////ZECOJ/////////////////////////////////////////////////
@@ -792,6 +865,9 @@ static void handle_deinit()
   app_sync_deinit(&sync);
   accel_tap_service_unsubscribe();
   bluetooth_connection_service_unsubscribe();
+#if defined(PBL_HEALTH)
+  health_service_events_unsubscribe();
+#endif
   window_destroy(window);
 }
 
