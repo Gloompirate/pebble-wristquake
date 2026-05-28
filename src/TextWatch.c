@@ -67,12 +67,14 @@ typedef struct {
 } TextLine;
 
 typedef struct {
-  // Fits "HH:MM · 999bpm · Rain 100°C" with headroom.
-  char  topbar[40];
+  // Fits "HH:MM · Rain 100°C" with headroom (HR moved to its own bottom-row slot).
+  char  topbar[32];
   char  bottombarL[10];
   // Icon now lives left of the text in its own BitmapLayer, so the text
   // itself is just the digit string; 8 chars covers up to "9999999".
   char  bottombarC[8];
+  // Heart-rate value next to its icon. "999" + NUL fits in 4 bytes.
+  char  bottombarHR[4];
   // Widened to 5 from upstream's 4 so "100%" fits (4 chars + NUL).
   char  bottombarR[5];
 } StatusBars;
@@ -82,15 +84,18 @@ static StatusBars status_bars;
 static TextLine topbar;
 static TextLine bottombarL;
 static TextLine bottombarC;
+static TextLine bottombarHR;
 static TextLine bottombarR;
 // Small "BT" indicator shown when bluetooth drops. Replaces the upstream's
 // InverterLayer trick, which was removed from the SDK for color displays.
 static TextLayer *bt_indicator;
-// Bitmap icons that sit immediately left of the steps and battery values
-// in the bottom row, populated from PNG resources at window_load.
+// Bitmap icons that sit immediately left of their corresponding values in
+// the bottom row, populated from PNG resources at window_load.
 static GBitmap *icon_steps_bmp = NULL;
+static GBitmap *icon_heart_bmp = NULL;
 static GBitmap *icon_battery_bmp = NULL;
 static BitmapLayer *icon_steps_layer = NULL;
+static BitmapLayer *icon_heart_layer = NULL;
 static BitmapLayer *icon_battery_layer = NULL;
 
 static AppTimer *shake_timeout = NULL;
@@ -169,33 +174,32 @@ GTextAlignment alignment;
 void info_lines(char *load_status) {
   BatteryChargeState charge_state = battery_state_service_peek();
 
-  // Build the topbar incrementally: time + (HR) + (weather). Each section is
-  // appended only when its data exists, so an unconfigured face just shows
-  // the time. Use an intermediate to avoid the snprintf(buf,…,"%s",buf,…)
-  // overlap-UB the upstream had.
+  // Topbar = time + (weather). HR moved out to its own bottom-row slot so
+  // the heart icon has a stable position next to its value.
   char hhmm[8];
   strftime(hhmm, sizeof(hhmm), "%H:%M", t);
-
-  char buf[sizeof(status_bars.topbar)];
-  size_t pos = 0;
-  pos += snprintf(buf + pos, sizeof(buf) - pos, "%s", hhmm);
-
-#if defined(PBL_HEALTH)
-  if (current_hr > 0) {
-    pos += snprintf(buf + pos, sizeof(buf) - pos, " • %dbpm", current_hr);
-  }
-#endif
 
   const bool have_weather = weather && weather_str[0] != '\0' && strcmp(weather_str, "no data") != 0;
   if (have_weather) {
     if (!strcmp(load_status, "")) {
       const char *temp = temp_unit ? temp_c_str : temp_f_str;
-      pos += snprintf(buf + pos, sizeof(buf) - pos, " • %s %s", weather_str, temp);
+      snprintf(status_bars.topbar, sizeof(status_bars.topbar),
+               "%s • %s %s", hhmm, weather_str, temp);
     } else {
-      pos += snprintf(buf + pos, sizeof(buf) - pos, " • %s", load_status);
+      snprintf(status_bars.topbar, sizeof(status_bars.topbar),
+               "%s • %s", hhmm, load_status);
     }
+  } else {
+    snprintf(status_bars.topbar, sizeof(status_bars.topbar), "%s", hhmm);
   }
-  snprintf(status_bars.topbar, sizeof(status_bars.topbar), "%s", buf);
+
+  // Heart-rate slot value (icon lives in its own BitmapLayer).
+  status_bars.bottombarHR[0] = '\0';
+#if defined(PBL_HEALTH)
+  if (current_hr > 0) {
+    snprintf(status_bars.bottombarHR, sizeof(status_bars.bottombarHR), "%d", current_hr);
+  }
+#endif
 
   strcpy(status_bars.bottombarL, "");
   strftime(status_bars.bottombarL, sizeof(status_bars.bottombarL), "%a %e", t);
@@ -215,6 +219,7 @@ void info_lines(char *load_status) {
   text_layer_set_text(topbar.layer[0], status_bars.topbar);
   text_layer_set_text(bottombarL.layer[0], status_bars.bottombarL);
   text_layer_set_text(bottombarC.layer[0], status_bars.bottombarC);
+  text_layer_set_text(bottombarHR.layer[0], status_bars.bottombarHR);
   text_layer_set_text(bottombarR.layer[0], status_bars.bottombarR);
 }
 
@@ -222,8 +227,10 @@ void hide_bars () {
   layer_set_hidden(text_layer_get_layer(topbar.layer[0]), true);
   layer_set_hidden(text_layer_get_layer(bottombarL.layer[0]), true);
   layer_set_hidden(text_layer_get_layer(bottombarC.layer[0]), true);
+  layer_set_hidden(text_layer_get_layer(bottombarHR.layer[0]), true);
   layer_set_hidden(text_layer_get_layer(bottombarR.layer[0]), true);
   if (icon_steps_layer)   layer_set_hidden(bitmap_layer_get_layer(icon_steps_layer), true);
+  if (icon_heart_layer)   layer_set_hidden(bitmap_layer_get_layer(icon_heart_layer), true);
   if (icon_battery_layer) layer_set_hidden(bitmap_layer_get_layer(icon_battery_layer), true);
   weather_force_update = false;
   shake_timeout = NULL;
@@ -233,10 +240,15 @@ void show_bars ()  {
   layer_set_hidden(text_layer_get_layer(topbar.layer[0]), false);
   layer_set_hidden(text_layer_get_layer(bottombarL.layer[0]), false);
   layer_set_hidden(text_layer_get_layer(bottombarC.layer[0]), false);
+  layer_set_hidden(text_layer_get_layer(bottombarHR.layer[0]), false);
   layer_set_hidden(text_layer_get_layer(bottombarR.layer[0]), false);
-  // The steps icon only makes sense when the steps text is populated.
+  // Each icon visible only when its slot has a value (so empty HR / no-HRM
+  // platforms don't show a lonely heart, and aplite's missing health data
+  // doesn't show a lonely shoe).
   const bool steps_visible = (status_bars.bottombarC[0] != '\0');
-  if (icon_steps_layer)   layer_set_hidden(bitmap_layer_get_layer(icon_steps_layer), !steps_visible);
+  const bool hr_visible    = (status_bars.bottombarHR[0] != '\0');
+  if (icon_steps_layer)   layer_set_hidden(bitmap_layer_get_layer(icon_steps_layer),   !steps_visible);
+  if (icon_heart_layer)   layer_set_hidden(bitmap_layer_get_layer(icon_heart_layer),   !hr_visible);
   if (icon_battery_layer) layer_set_hidden(bitmap_layer_get_layer(icon_battery_layer), false);
 }
 void wrist_flick_handler(AccelAxisType axis, int32_t direction) {
@@ -727,8 +739,8 @@ static void window_load(Window *window)
   }
   
   /////////////////////////////////////////////////ZECOJ/////////////////////////////////////////////////
-  // Status bars: pinned to top edge (topbar) and bottom edge (bottombarL/C/R)
-  // of whatever screen we're on. Bar geometry and font scale up on emery
+  // Status bars: pinned to top edge (topbar) and bottom edge (4 slots) of
+  // whatever screen we're on. Bar geometry and font scale up on emery
   // (200x228) — the 144x168 sizing was unreadably small there.
   const bool big = (screen_h >= 200);
   const char *bar_font_key = big ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14;
@@ -736,21 +748,26 @@ static void window_load(Window *window)
   const int16_t BAR_H = big ? 22 : 15;
   const int16_t BAR_TOP_H = big ? 22 : 16;
   const int16_t BAR_TOP_Y = big ? 0 : -4;
-  const int16_t L_W = big ? 60 : 45;
-  // R widened from the icon-less days so "100%" fits to the right of the
-  // battery glyph; same for the steps slot dimensions below.
-  const int16_t R_W = big ? 60 : 48;
   const int16_t BT_W = big ? 22 : 14;
-  // 12x12 icons, vertically centered inside the bar with a 2-px left pad
-  // and a 2-px gap before their text.
+  // 12x12 icons, vertically centered inside the bar with a small left pad
+  // and gap before their text.
   const int16_t ICON_SZ = 12;
   const int16_t ICON_GAP = 2;
   const int16_t ICON_PAD = 2;
-  const int16_t ICON_X_OFF = ICON_PAD + ICON_SZ + ICON_GAP;  // text x-offset within each slot
+  const int16_t ICON_X_OFF = ICON_PAD + ICON_SZ + ICON_GAP;
   const int16_t ICON_Y = screen_h - BAR_H + (BAR_H - ICON_SZ) / 2;
-  const int16_t C_X = L_W;
-  const int16_t C_W = screen_w - L_W - R_W;
-  const int16_t R_X = screen_w - R_W;
+
+  // Bottom-row slot widths: date | steps | HR | battery.
+  // The HR slot collapses to 0 on small screens since there's no room and
+  // the small-watch platforms (aplite/basalt/diorite) don't have an HRM
+  // anyway. Slot widths total to screen_w exactly.
+  const int16_t L_W = big ? 50 : 45;          // date
+  const int16_t C_W = big ? 52 : (screen_w - L_W - 48); // steps slot
+  const int16_t HR_W = big ? 42 : 0;          // HR slot (zero-width on small)
+  const int16_t R_W = screen_w - L_W - C_W - HR_W;     // battery, fills remainder
+  const int16_t C_X  = L_W;
+  const int16_t HR_X = L_W + C_W;
+  const int16_t R_X  = screen_w - R_W;
 
   topbar.layer[0] = text_layer_create(GRect(0, BAR_TOP_Y, screen_w, BAR_TOP_H));
   text_layer_set_text_color(topbar.layer[0], GColorWhite);
@@ -771,6 +788,14 @@ static void window_load(Window *window)
   text_layer_set_font(bottombarC.layer[0], bar_font);
   text_layer_set_text_alignment(bottombarC.layer[0], GTextAlignmentLeft);
 
+  // HR slot: same pattern, only meaningful when big (HR_W > 0).
+  bottombarHR.layer[0] = text_layer_create(GRect(HR_X + ICON_X_OFF, screen_h - BAR_H,
+                                                  HR_W > ICON_X_OFF ? HR_W - ICON_X_OFF : 0, BAR_H));
+  text_layer_set_text_color(bottombarHR.layer[0], GColorWhite);
+  text_layer_set_background_color(bottombarHR.layer[0], GColorBlack);
+  text_layer_set_font(bottombarHR.layer[0], bar_font);
+  text_layer_set_text_alignment(bottombarHR.layer[0], GTextAlignmentLeft);
+
   // Battery slot: icon at R_X+ICON_PAD, text starts after the icon.
   bottombarR.layer[0] = text_layer_create(GRect(R_X + ICON_X_OFF, screen_h - BAR_H, R_W - ICON_X_OFF, BAR_H));
   text_layer_set_text_color(bottombarR.layer[0], GColorWhite);
@@ -778,31 +803,39 @@ static void window_load(Window *window)
   text_layer_set_font(bottombarR.layer[0], bar_font);
   text_layer_set_text_alignment(bottombarR.layer[0], GTextAlignmentLeft);
 
-  // Bitmap icons for the steps and battery values.
+  // Bitmap icons. Heart is only loaded/mounted on big screens (no room on small).
   icon_steps_bmp   = gbitmap_create_with_resource(RESOURCE_ID_IMG_STEPS);
   icon_battery_bmp = gbitmap_create_with_resource(RESOURCE_ID_IMG_BATTERY);
   icon_steps_layer   = bitmap_layer_create(GRect(C_X + ICON_PAD, ICON_Y, ICON_SZ, ICON_SZ));
   icon_battery_layer = bitmap_layer_create(GRect(R_X + ICON_PAD, ICON_Y, ICON_SZ, ICON_SZ));
   bitmap_layer_set_bitmap(icon_steps_layer,   icon_steps_bmp);
   bitmap_layer_set_bitmap(icon_battery_layer, icon_battery_bmp);
-  // GCompOpSet honors the PNG alpha so the transparent-background icons
-  // show only their shape rather than a black square.
   bitmap_layer_set_compositing_mode(icon_steps_layer,   GCompOpSet);
   bitmap_layer_set_compositing_mode(icon_battery_layer, GCompOpSet);
+  if (big) {
+    icon_heart_bmp   = gbitmap_create_with_resource(RESOURCE_ID_IMG_HEART);
+    icon_heart_layer = bitmap_layer_create(GRect(HR_X + ICON_PAD, ICON_Y, ICON_SZ, ICON_SZ));
+    bitmap_layer_set_bitmap(icon_heart_layer, icon_heart_bmp);
+    bitmap_layer_set_compositing_mode(icon_heart_layer, GCompOpSet);
+  }
 
   layer_add_child(window_layer, text_layer_get_layer(topbar.layer[0]));
   layer_add_child(window_layer, text_layer_get_layer(bottombarL.layer[0]));
   layer_add_child(window_layer, text_layer_get_layer(bottombarC.layer[0]));
+  layer_add_child(window_layer, text_layer_get_layer(bottombarHR.layer[0]));
   layer_add_child(window_layer, text_layer_get_layer(bottombarR.layer[0]));
   layer_add_child(window_layer, bitmap_layer_get_layer(icon_steps_layer));
   layer_add_child(window_layer, bitmap_layer_get_layer(icon_battery_layer));
+  if (icon_heart_layer) layer_add_child(window_layer, bitmap_layer_get_layer(icon_heart_layer));
 
   layer_set_hidden(text_layer_get_layer(topbar.layer[0]), true);
   layer_set_hidden(text_layer_get_layer(bottombarL.layer[0]), true);
   layer_set_hidden(text_layer_get_layer(bottombarC.layer[0]), true);
+  layer_set_hidden(text_layer_get_layer(bottombarHR.layer[0]), true);
   layer_set_hidden(text_layer_get_layer(bottombarR.layer[0]), true);
   layer_set_hidden(bitmap_layer_get_layer(icon_steps_layer), true);
   layer_set_hidden(bitmap_layer_get_layer(icon_battery_layer), true);
+  if (icon_heart_layer) layer_set_hidden(bitmap_layer_get_layer(icon_heart_layer), true);
 
   // Bluetooth-down indicator, top-right corner. Shown only while disconnected.
   bt_indicator = text_layer_create(GRect(screen_w - BT_W, 0, BT_W, BAR_TOP_H));
@@ -849,11 +882,14 @@ static void window_unload(Window *window)
   text_layer_destroy(topbar.layer[0]);
   text_layer_destroy(bottombarL.layer[0]);
   text_layer_destroy(bottombarC.layer[0]);
+  text_layer_destroy(bottombarHR.layer[0]);
   text_layer_destroy(bottombarR.layer[0]);
   text_layer_destroy(bt_indicator);
   if (icon_steps_layer)   bitmap_layer_destroy(icon_steps_layer);
+  if (icon_heart_layer)   bitmap_layer_destroy(icon_heart_layer);
   if (icon_battery_layer) bitmap_layer_destroy(icon_battery_layer);
   if (icon_steps_bmp)   gbitmap_destroy(icon_steps_bmp);
+  if (icon_heart_bmp)   gbitmap_destroy(icon_heart_bmp);
   if (icon_battery_bmp) gbitmap_destroy(icon_battery_bmp);
 
   for (int i = 0; i < NUM_LINES; i++)

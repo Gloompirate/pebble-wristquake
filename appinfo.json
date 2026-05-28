@@ -28,6 +28,11 @@
             },
             {
                 "type": "bitmap",
+                "name": "IMG_HEART",
+                "file": "images/heart.png"
+            },
+            {
+                "type": "bitmap",
                 "name": "IMG_BATTERY",
                 "file": "images/battery.png"
             }

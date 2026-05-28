@@ -1,7 +1,8 @@
 """Generate Wristquake's PBI icons.
 
 Produces 12x12 monochrome PNGs in resources/images/:
-  - steps.png    (footprint pair, for the step-count slot)
+  - steps.png    (side-profile sneaker, for the step-count slot)
+  - heart.png    (heart, for the heart-rate slot)
   - battery.png  (battery silhouette, for the battery slot)
 
 These are built into the .pbw by the Pebble SDK via the `media` array
@@ -21,19 +22,37 @@ SIZE = 12
 # Designed at 12x12 to leave a 1px margin all around inside a 12x12 cell
 # so the icon doesn't kiss adjacent text.
 
+# Side-profile sneaker — high-top silhouette with a flat sole stripe along the
+# bottom. Reads as "shoe" much better than the abstract footprint pair did.
 STEPS = [
     "............",
     "............",
-    "...XX.......",
-    "..XXXX......",
-    "..XXXX...XX.",
-    "...XX...XXXX",
-    "........XXXX",
-    ".XX......XX.",
-    "XXXX........",
-    "XXXX..XX....",
-    ".XX..XXXX...",
-    ".....XXXX...",
+    ".....XXX....",
+    "....XXXXX...",
+    "....XXXXX...",
+    "..XXXXXXXXX.",
+    "..XXXXXXXXX.",
+    ".XXXXXXXXXXX",
+    "XXXXXXXXXXXX",
+    "XXXXXXXXXXXX",
+    "............",
+    "............",
+]
+
+# Classic heart — two top bumps with a small notch, tapering to a point.
+HEART = [
+    "............",
+    ".XX....XX...",
+    "XXXX..XXXX..",
+    "XXXXXXXXXX..",
+    "XXXXXXXXXX..",
+    "XXXXXXXXXX..",
+    ".XXXXXXXX...",
+    "..XXXXXX....",
+    "...XXXX.....",
+    "....XX......",
+    "............",
+    "............",
 ]
 
 BATTERY = [
@@ -51,10 +70,9 @@ BATTERY = [
     "............",
 ]
 
-assert all(len(r) == SIZE for r in STEPS), "STEPS rows must be %d wide" % SIZE
-assert len(STEPS) == SIZE
-assert all(len(r) == SIZE for r in BATTERY)
-assert len(BATTERY) == SIZE
+for name, art in (("STEPS", STEPS), ("HEART", HEART), ("BATTERY", BATTERY)):
+    assert len(art) == SIZE, f"{name} must be {SIZE} rows tall"
+    assert all(len(r) == SIZE for r in art), f"{name} rows must be {SIZE} wide"
 
 
 def encode_png(pixels: list[list[int]]) -> bytes:
@@ -100,7 +118,7 @@ def rasterize(rows: list[str]) -> list[list[int]]:
 def main() -> None:
     out_dir = Path(__file__).resolve().parent.parent / "resources" / "images"
     out_dir.mkdir(parents=True, exist_ok=True)
-    for name, art in [("steps", STEPS), ("battery", BATTERY)]:
+    for name, art in [("steps", STEPS), ("heart", HEART), ("battery", BATTERY)]:
         path = out_dir / f"{name}.png"
         path.write_bytes(encode_png(rasterize(art)))
         print(f"wrote {path}")
