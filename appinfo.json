@@ -20,7 +20,18 @@
     "projectType": "native",
     "sdkVersion": "3",
     "resources": {
-        "media": []
+        "media": [
+            {
+                "type": "bitmap",
+                "name": "IMG_STEPS",
+                "file": "images/steps.png"
+            },
+            {
+                "type": "bitmap",
+                "name": "IMG_BATTERY",
+                "file": "images/battery.png"
+            }
+        ]
     },
     "shortName": "Wristquake",
     "targetPlatforms": [
