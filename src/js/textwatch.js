@@ -152,7 +152,11 @@ function logError(event) {
 
 function showConfiguration(event) {
     var opts = getOptions();
-    var url  = "http://zecoj.github.io/ultimate.text.watch/";
+    // Wristquake config page lives in this repo under /docs and is served
+    // via GitHub Pages over HTTPS. Moved off the upstream zecoj.github.io
+    // page so we can add new appKeys (showSteps) and not depend on an
+    // HTTP-only host the Pebble app may block.
+    var url  = "https://gloompirate.github.io/pebble-wristquake/";
     console.log(opts);
     Pebble.openURL(url + "#options=" + encodeURIComponent(opts));
 }
@@ -160,13 +164,17 @@ function showConfiguration(event) {
 function webviewclosed(event) {
   var resp = event.response;
   console.log('configuration response: '+ resp + ' ('+ typeof resp +')');
+  if (!resp) return; // user hit Cancel; response is empty
 
-  var options = JSON.parse(resp);
+  var options;
+  try { options = JSON.parse(resp); } catch (_) { return; }
+
   if (typeof options.bluetooth === 'undefined' &&
       typeof options.text_style === 'undefined' &&
       typeof options.text_align === 'undefined' &&
       typeof options.temp_unit === 'undefined' &&
-      typeof options.weather === 'undefined') {
+      typeof options.weather === 'undefined' &&
+      typeof options.show_steps === 'undefined') {
     return;
   }
 

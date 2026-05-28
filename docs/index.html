@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wristquake settings</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; background: #111; color: #eee; font: 16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { padding: 16px 16px 32px; max-width: 480px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; color: #888; font-size: 13px; }
+  fieldset { border: 0; padding: 0; margin: 0 0 18px; }
+  legend { font-weight: 600; font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: #bbb; padding: 0 0 6px; }
+  .row { display: flex; gap: 6px; flex-wrap: wrap; }
+  .row label { flex: 1 1 0; min-width: 90px; }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg label { display: block; padding: 10px 8px; background: #1d1d1d; border: 1px solid #2a2a2a; border-radius: 8px; text-align: center; cursor: pointer; user-select: none; transition: background .12s, border-color .12s; }
+  .seg input:checked + label { background: #2563eb; border-color: #3b82f6; color: #fff; }
+  .toggle { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; background: #1d1d1d; border: 1px solid #2a2a2a; border-radius: 8px; cursor: pointer; }
+  .toggle input { transform: scale(1.2); margin: 0; }
+  select { width: 100%; padding: 10px 12px; background: #1d1d1d; border: 1px solid #2a2a2a; border-radius: 8px; color: #eee; font-size: 16px; appearance: none; }
+  .actions { display: flex; gap: 10px; margin-top: 24px; }
+  button { flex: 1; padding: 14px; border-radius: 8px; border: 0; font-size: 16px; cursor: pointer; }
+  .save { background: #2563eb; color: #fff; }
+  .save:active { background: #1d4ed8; }
+  .cancel { background: #2a2a2a; color: #ddd; }
+</style>
+</head>
+<body>
+
+<h1>Wristquake</h1>
+<p class="sub">v0.1 &middot; settings sync back to the watch when you tap Save.</p>
+
+<form id="cfg" onsubmit="return submitConfig(event)">
+
+  <fieldset>
+    <legend>Time style</legend>
+    <div class="row seg">
+      <input type="radio" id="ts-fuzzy"   name="text_style" value="fuzzy">
+      <label for="ts-fuzzy">Fuzzy</label>
+      <input type="radio" id="ts-human"   name="text_style" value="human">
+      <label for="ts-human">Human</label>
+      <input type="radio" id="ts-machine" name="text_style" value="machine">
+      <label for="ts-machine">Machine</label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Alignment</legend>
+    <div class="row seg">
+      <input type="radio" id="al-left"   name="text_align" value="left">
+      <label for="al-left">Left</label>
+      <input type="radio" id="al-center" name="text_align" value="center">
+      <label for="al-center">Center</label>
+      <input type="radio" id="al-right"  name="text_align" value="right">
+      <label for="al-right">Right</label>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Bluetooth alert</legend>
+    <label class="toggle">
+      <span>Vibrate &amp; show indicator when phone disconnects</span>
+      <input type="checkbox" id="bluetooth" name="bluetooth">
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Step count on shake</legend>
+    <label class="toggle">
+      <span>Show today's steps in the shake overlay (PT2 / basalt+)</span>
+      <input type="checkbox" id="show_steps" name="show_steps">
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Weather refresh</legend>
+    <select id="weather" name="weather">
+      <option value="off">Off</option>
+      <option value="on_15">Every 15 min</option>
+      <option value="on_30">Every 30 min</option>
+      <option value="on_60">Every hour</option>
+    </select>
+  </fieldset>
+
+  <fieldset>
+    <legend>Temperature unit</legend>
+    <div class="row seg">
+      <input type="radio" id="tu-c" name="temp_unit" value="c">
+      <label for="tu-c">&deg;C</label>
+      <input type="radio" id="tu-f" name="temp_unit" value="f">
+      <label for="tu-f">&deg;F</label>
+    </div>
+  </fieldset>
+
+  <div class="actions">
+    <button type="button" class="cancel" onclick="cancel()">Cancel</button>
+    <button type="submit" class="save">Save</button>
+  </div>
+</form>
+
+<script>
+  // Defaults match TextWatch.c's static initializers.
+  const DEFAULTS = {
+    text_style: 'fuzzy',
+    text_align: 'center',
+    bluetooth: true,
+    show_steps: true,
+    weather: 'on_15',
+    temp_unit: 'c'
+  };
+
+  function parseHashOptions() {
+    const m = location.hash.match(/options=([^&]+)/);
+    if (!m) return {};
+    try { return JSON.parse(decodeURIComponent(m[1])); } catch (_) { return {}; }
+  }
+
+  function setRadio(name, value) {
+    const el = document.querySelector(`input[name="${name}"][value="${value}"]`);
+    if (el) el.checked = true;
+  }
+
+  function populate() {
+    const stored = Object.assign({}, DEFAULTS, parseHashOptions());
+    setRadio('text_style', stored.text_style);
+    setRadio('text_align', stored.text_align);
+    setRadio('temp_unit',  stored.temp_unit);
+    document.getElementById('weather').value    = stored.weather;
+    document.getElementById('bluetooth').checked  = !!stored.bluetooth;
+    document.getElementById('show_steps').checked = !!stored.show_steps;
+  }
+
+  function submitConfig(e) {
+    e.preventDefault();
+    const fd = new FormData(document.getElementById('cfg'));
+    const payload = {
+      text_style: fd.get('text_style') || DEFAULTS.text_style,
+      text_align: fd.get('text_align') || DEFAULTS.text_align,
+      temp_unit:  fd.get('temp_unit')  || DEFAULTS.temp_unit,
+      weather:    fd.get('weather')    || DEFAULTS.weather,
+      bluetooth:  document.getElementById('bluetooth').checked,
+      show_steps: document.getElementById('show_steps').checked
+    };
+    location.href = 'pebblejs://close#' + encodeURIComponent(JSON.stringify(payload));
+    return false;
+  }
+
+  function cancel() {
+    location.href = 'pebblejs://close#';
+  }
+
+  populate();
+</script>
+
+</body>
+</html>
