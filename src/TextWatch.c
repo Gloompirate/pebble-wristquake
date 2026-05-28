@@ -66,7 +66,8 @@ typedef struct {
 typedef struct {
   char  topbar[25];
   char  bottombarL[10];
-  char  bottombarC[12];
+  // "12345 steps" + NUL = 12 bytes; allow some headroom for big-step days.
+  char  bottombarC[16];
   // Widened to 5 from upstream's 4 so "100%" fits (4 chars + NUL).
   char  bottombarR[5];
 } StatusBars;
@@ -86,9 +87,12 @@ static AppTimer *shake_timeout = NULL;
 static AppSync sync;
 static uint8_t sync_buffer[256];
 
-static char weather_str[] = "012345678901234";
-static char temp_c_str[] = "01234";
-static char temp_f_str[] = "01234";
+// Empty defaults: upstream initialized these to "012345..." placeholders that
+// leaked into the topbar before any weather fetch completed. Keep them empty
+// until the JS fills them in; info_lines now treats empty as "not loaded".
+static char weather_str[16] = "";
+static char temp_c_str[8] = "";
+static char temp_f_str[8] = "";
 static bool temp_unit = true; // true==C false==F
 
 #define  CONF_ALIGNMENT             0
@@ -158,7 +162,8 @@ void info_lines(char *load_status) {
   // that's also the source — that's UB and modern gcc rejects it.
   char hhmm[8];
   strftime(hhmm, sizeof(hhmm), "%H:%M", t);
-  if (strcmp(weather_str, "no data") && weather) {
+  const bool have_weather = weather && weather_str[0] != '\0' && strcmp(weather_str, "no data") != 0;
+  if (have_weather) {
     if (!strcmp(load_status, "")) {
       const char *temp = temp_unit ? temp_c_str : temp_f_str;
       snprintf(status_bars.topbar, sizeof(status_bars.topbar),
@@ -175,11 +180,12 @@ void info_lines(char *load_status) {
   strftime(status_bars.bottombarL, sizeof(status_bars.bottombarL), "%a %e", t);
   snprintf(status_bars.bottombarR, sizeof(status_bars.bottombarR), "%d%%", charge_state.charge_percent);
 
-  // Center slot: step count, only when enabled and the platform has Pebble Health.
+  // Center slot: step count with a "steps" label so it's unambiguous next to
+  // the date and battery %. Only populated when the platform has Pebble Health.
   status_bars.bottombarC[0] = '\0';
 #if defined(PBL_HEALTH)
   if (show_steps) {
-    snprintf(status_bars.bottombarC, sizeof(status_bars.bottombarC), "%d", current_steps);
+    snprintf(status_bars.bottombarC, sizeof(status_bars.bottombarC), "%d steps", current_steps);
   }
 #endif
 
@@ -690,35 +696,41 @@ static void window_load(Window *window)
   }
   
   /////////////////////////////////////////////////ZECOJ/////////////////////////////////////////////////
-  // Status bars: pinned to top edge (topbar) and bottom edge (bottombarL/C/R) of whatever
-  // screen we're on. Left and right fixed-width; center fills the gap so it scales with screen.
-  const int16_t BAR_H = 15;
-  const int16_t BAR_TOP_H = 16;
-  const int16_t L_W = 45;
-  const int16_t R_W = 34;
+  // Status bars: pinned to top edge (topbar) and bottom edge (bottombarL/C/R)
+  // of whatever screen we're on. Bar geometry and font scale up on emery
+  // (200x228) — the 144x168 sizing was unreadably small there.
+  const bool big = (screen_h >= 200);
+  const char *bar_font_key = big ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14;
+  GFont bar_font = fonts_get_system_font(bar_font_key);
+  const int16_t BAR_H = big ? 22 : 15;
+  const int16_t BAR_TOP_H = big ? 22 : 16;
+  const int16_t BAR_TOP_Y = big ? 0 : -4;
+  const int16_t L_W = big ? 60 : 45;
+  const int16_t R_W = big ? 42 : 34;
+  const int16_t BT_W = big ? 22 : 14;
 
-  topbar.layer[0] = text_layer_create(GRect(0, -4, screen_w, BAR_TOP_H));
+  topbar.layer[0] = text_layer_create(GRect(0, BAR_TOP_Y, screen_w, BAR_TOP_H));
   text_layer_set_text_color(topbar.layer[0], GColorWhite);
   text_layer_set_background_color(topbar.layer[0], GColorBlack);
-  text_layer_set_font(topbar.layer[0], fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_font(topbar.layer[0], bar_font);
   text_layer_set_text_alignment(topbar.layer[0], GTextAlignmentCenter);
 
   bottombarL.layer[0] = text_layer_create(GRect(0, screen_h - BAR_H, L_W, BAR_H));
   text_layer_set_text_color(bottombarL.layer[0], GColorWhite);
   text_layer_set_background_color(bottombarL.layer[0], GColorBlack);
-  text_layer_set_font(bottombarL.layer[0], fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_font(bottombarL.layer[0], bar_font);
   text_layer_set_text_alignment(bottombarL.layer[0], GTextAlignmentLeft);
 
   bottombarC.layer[0] = text_layer_create(GRect(L_W, screen_h - BAR_H, screen_w - L_W - R_W, BAR_H));
   text_layer_set_text_color(bottombarC.layer[0], GColorWhite);
   text_layer_set_background_color(bottombarC.layer[0], GColorBlack);
-  text_layer_set_font(bottombarC.layer[0], fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_font(bottombarC.layer[0], bar_font);
   text_layer_set_text_alignment(bottombarC.layer[0], GTextAlignmentCenter);
 
   bottombarR.layer[0] = text_layer_create(GRect(screen_w - R_W, screen_h - BAR_H, R_W, BAR_H));
   text_layer_set_text_color(bottombarR.layer[0], GColorWhite);
   text_layer_set_background_color(bottombarR.layer[0], GColorBlack);
-  text_layer_set_font(bottombarR.layer[0], fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_font(bottombarR.layer[0], bar_font);
   text_layer_set_text_alignment(bottombarR.layer[0], GTextAlignmentRight);
 
   layer_add_child(window_layer, text_layer_get_layer(topbar.layer[0]));
@@ -732,11 +744,11 @@ static void window_load(Window *window)
   layer_set_hidden(text_layer_get_layer(bottombarR.layer[0]), true);
 
   // Bluetooth-down indicator, top-right corner. Shown only while disconnected.
-  bt_indicator = text_layer_create(GRect(screen_w - 14, 0, 14, 16));
+  bt_indicator = text_layer_create(GRect(screen_w - BT_W, 0, BT_W, BAR_TOP_H));
   text_layer_set_text(bt_indicator, "BT");
   text_layer_set_text_color(bt_indicator, GColorWhite);
   text_layer_set_background_color(bt_indicator, GColorBlack);
-  text_layer_set_font(bt_indicator, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+  text_layer_set_font(bt_indicator, bar_font);
   text_layer_set_text_alignment(bt_indicator, GTextAlignmentRight);
   layer_add_child(window_layer, text_layer_get_layer(bt_indicator));
   layer_set_hidden(text_layer_get_layer(bt_indicator), true);
@@ -810,17 +822,18 @@ static void handle_init() {
   if (persist_exists(WEATHER_ICON_KEY))
   {
     persist_read_string(WEATHER_ICON_KEY, weather_str, sizeof(weather_str));
-    //APP_LOG(APP_LOG_LEVEL_DEBUG, "Read WEATHER_ICON_KEY from store: %s", weather_str);
+    // Migrate the upstream's "012345..." placeholder if it persisted from an older install.
+    if (weather_str[0] == '0' && weather_str[1] == '1' && weather_str[2] == '2') weather_str[0] = '\0';
   }
   if (persist_exists(WEATHER_TEMPERATURE_C_KEY))
   {
     persist_read_string(WEATHER_TEMPERATURE_C_KEY, temp_c_str, sizeof(temp_c_str));
-    //APP_LOG(APP_LOG_LEVEL_DEBUG, "Read WEATHER_TEMPERATURE_C_KEY from store: %s", temp_c_str);
+    if (temp_c_str[0] == '0' && temp_c_str[1] == '1' && temp_c_str[2] == '2') temp_c_str[0] = '\0';
   }
   if (persist_exists(WEATHER_TEMPERATURE_F_KEY))
   {
     persist_read_string(WEATHER_TEMPERATURE_F_KEY, temp_f_str, sizeof(temp_f_str));
-    //APP_LOG(APP_LOG_LEVEL_DEBUG, "Read WEATHER_TEMPERATURE_F_KEY from store: %s", temp_f_str);
+    if (temp_f_str[0] == '0' && temp_f_str[1] == '1' && temp_f_str[2] == '2') temp_f_str[0] = '\0';
   }
   if (persist_exists(WEATHER_TEMPERATURE_UNIT))
   {
