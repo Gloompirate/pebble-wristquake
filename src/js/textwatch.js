@@ -27,58 +27,75 @@ var weather = {
 
 var locationOptions = { "timeout": 150000, "maximumAge": 600000 };
 
+// WMO weather codes \u2014 https://open-meteo.com/en/docs \u2014 collapsed to short
+// labels that fit the watchface's topbar string.
+function wmoToIcon(code) {
+  if (code === 0)                       return "Clear";
+  if (code >= 1  && code <= 3)          return "Cloudy";
+  if (code === 45 || code === 48)       return "Fog";
+  if (code >= 51 && code <= 57)         return "Drizzle";
+  if (code >= 61 && code <= 67)         return "Rain";
+  if (code >= 71 && code <= 77)         return "Snow";
+  if (code >= 80 && code <= 82)         return "Rain";
+  if (code === 85 || code === 86)       return "Snow";
+  if (code >= 95)                       return "Storm";
+  return "Unknown";
+}
+
 function fetchWeather(latitude, longitude) {
-  var curTime = Math.floor((new Date).getTime()/1000);
-  var lastFetch = localStorage.getItem("lastFetch");
+  var curTime = Math.floor((new Date).getTime() / 1000);
+  var lastFetch = parseInt(localStorage.getItem("lastFetch") || "0", 10);
 
   if (isFetching) {
     console.log("fetchWeather: already fetching, quit");
     return;
   }
-  else if (curTime - lastFetch < 900) {
-    console.log("fetchWeather: already fetched recently, quit");
+  if (curTime - lastFetch < 900) {
+    console.log("fetchWeather: cached, last fetch " + (curTime - lastFetch) + "s ago");
     return;
   }
-  else {
-    isFetching = true;
-    console.log("fetchWeather: fetching now");
 
-    var response;
-    var req = new XMLHttpRequest();
-    req.open('GET', "http://api.openweathermap.org/data/2.5/find?" +
-               "lat=" + latitude + "&lon=" + longitude + "&cnt=1", true);
-    req.onload = function(e) {
-      if (req.readyState == 4) {
-        if(req.status == 200) {
-          console.log(req.responseText);
-          response = JSON.parse(req.responseText);
-          var temperatureC, temperatureF, icon, city;
-          if (response && response.list && response.list.length > 0) {
-            var weatherResult = response.list[0];
-            temperatureC = Math.round(weatherResult.main.temp - 273.15);
-            temperatureF = Math.round((weatherResult.main.temp*1.8) - 459.67);
-            icon = weatherResult.weather[0].main;
-            city = weatherResult.name;
-            console.log(temperatureC);
-            console.log(temperatureF);
-            console.log(icon);
-            console.log(city);
-            localStorage.setItem("lastFetch", curTime);
-            transmitConfiguration({
-              "icon":icon,
-              "temperatureC":"" + temperatureC+"\u00B0C",
-              "temperatureF":"" + temperatureF+"\u00B0F"
-              });
-          }
-        } else {
-          console.log("Error");
-        }
-      }
-    };
-    req.send(null);
+  isFetching = true;
+  console.log("fetchWeather: requesting Open-Meteo");
+
+  // Open-Meteo: free, no API key, HTTPS. Returns current temperature in C
+  // and a WMO weather code; we map the code to a short label and compute F
+  // locally so the watch can pick based on temp_unit.
+  var url = "https://api.open-meteo.com/v1/forecast"
+          + "?latitude=" + latitude
+          + "&longitude=" + longitude
+          + "&current=temperature_2m,weather_code";
+
+  var req = new XMLHttpRequest();
+  req.open('GET', url, true);
+  req.onload = function() {
     isFetching = false;
-    console.log("fetchWeather: finished fetching, quit");
-  }
+    if (req.readyState !== 4) return;
+    if (req.status !== 200) {
+      console.log("fetchWeather: HTTP " + req.status);
+      return;
+    }
+    try {
+      var data = JSON.parse(req.responseText);
+      var tempC = Math.round(data.current.temperature_2m);
+      var tempF = Math.round(tempC * 9 / 5 + 32);
+      var icon  = wmoToIcon(data.current.weather_code);
+      console.log("fetchWeather: " + icon + " " + tempC + "C / " + tempF + "F");
+      localStorage.setItem("lastFetch", curTime);
+      transmitConfiguration({
+        "icon": icon,
+        "temperatureC": tempC + "\u00B0C",
+        "temperatureF": tempF + "\u00B0F"
+      });
+    } catch (e) {
+      console.log("fetchWeather: parse error " + e);
+    }
+  };
+  req.onerror = function() {
+    isFetching = false;
+    console.log("fetchWeather: network error");
+  };
+  req.send(null);
 }
 
 function locationSuccess(pos) {
