@@ -67,7 +67,8 @@ typedef struct {
   char  topbar[25];
   char  bottombarL[10];
   char  bottombarC[12];
-  char  bottombarR[4];
+  // Widened to 5 from upstream's 4 so "100%" fits (4 chars + NUL).
+  char  bottombarR[5];
 } StatusBars;
 
 static StatusBars status_bars;
@@ -152,20 +153,22 @@ GTextAlignment alignment;
 /////////////////////////////////////////////////ZECOJ/////////////////////////////////////////////////
 void info_lines(char *load_status) {
   BatteryChargeState charge_state = battery_state_service_peek();
-  
-  strftime(status_bars.topbar, sizeof(status_bars.topbar), "%H:%M", t);
+
+  // Build the topbar via an intermediate so we don't snprintf into a buffer
+  // that's also the source — that's UB and modern gcc rejects it.
+  char hhmm[8];
+  strftime(hhmm, sizeof(hhmm), "%H:%M", t);
   if (strcmp(weather_str, "no data") && weather) {
     if (!strcmp(load_status, "")) {
-      if(temp_unit) {
-        snprintf(status_bars.topbar, sizeof(status_bars.topbar), "%s • %s %s", status_bars.topbar, weather_str, temp_c_str);
-      }
-      else {
-        snprintf(status_bars.topbar, sizeof(status_bars.topbar), "%s • %s %s", status_bars.topbar, weather_str, temp_f_str);
-      }
+      const char *temp = temp_unit ? temp_c_str : temp_f_str;
+      snprintf(status_bars.topbar, sizeof(status_bars.topbar),
+               "%s • %s %s", hhmm, weather_str, temp);
+    } else {
+      snprintf(status_bars.topbar, sizeof(status_bars.topbar),
+               "%s • %s", hhmm, load_status);
     }
-    else {
-    snprintf(status_bars.topbar, sizeof(status_bars.topbar), "%s • %s", status_bars.topbar, load_status);
-    }
+  } else {
+    snprintf(status_bars.topbar, sizeof(status_bars.topbar), "%s", hhmm);
   }
 
   strcpy(status_bars.bottombarL, "");
@@ -384,30 +387,34 @@ static void makeAnimationsForLayer(Line *line, int delay)
      property_animation_destroy(line->animation2);
   }
 
-  // Configure animation for current layer to move out
+  // Configure animation for current layer to move out. PropertyAnimation is
+  // opaque in SDK 3+, so use property_animation_get_animation to get an
+  // Animation* instead of reaching into the struct.
   GRect rect = layer_get_frame((Layer *)current);
   rect.origin.x = -screen_w;
   line->animation1 = property_animation_create_layer_frame((Layer *)current, NULL, &rect);
-  animation_set_duration(&line->animation1->animation, ANIMATION_DURATION);
-  animation_set_delay(&line->animation1->animation, delay);
-  animation_set_curve(&line->animation1->animation, AnimationCurveEaseIn); // Accelerate
+  Animation *anim1 = property_animation_get_animation(line->animation1);
+  animation_set_duration(anim1, ANIMATION_DURATION);
+  animation_set_delay(anim1, delay);
+  animation_set_curve(anim1, AnimationCurveEaseIn); // Accelerate
 
-  // Configure animation for current layer to move in
+  // Configure animation for next layer to move in
   GRect rect2 = layer_get_frame((Layer *)next);
   rect2.origin.x = 0;
   line->animation2 = property_animation_create_layer_frame((Layer *)next, NULL, &rect2);
-  animation_set_duration(&line->animation2->animation, ANIMATION_DURATION);
-  animation_set_delay(&line->animation2->animation, delay + ANIMATION_OUT_IN_DELAY);
-  animation_set_curve(&line->animation2->animation, AnimationCurveEaseOut); // Deaccelerate
+  Animation *anim2 = property_animation_get_animation(line->animation2);
+  animation_set_duration(anim2, ANIMATION_DURATION);
+  animation_set_delay(anim2, delay + ANIMATION_OUT_IN_DELAY);
+  animation_set_curve(anim2, AnimationCurveEaseOut); // Deaccelerate
 
   // Set a handler to rearrange layers after animation is finished
-  animation_set_handlers(&line->animation2->animation, (AnimationHandlers) {
+  animation_set_handlers(anim2, (AnimationHandlers) {
     .stopped = (AnimationStoppedHandler)animationStoppedHandler
   }, current);
 
   // Start the animations
-  animation_schedule(&line->animation1->animation);
-  animation_schedule(&line->animation2->animation);  
+  animation_schedule(anim1);
+  animation_schedule(anim2);
 }
 
 static void updateLayerText(TextLayer* layer, char* text)

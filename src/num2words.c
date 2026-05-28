@@ -174,7 +174,8 @@ void time_to_words_0(Language lang, int hours, int minutes, int seconds, char* w
 
 
 void time_to_words_1(Language lang, int hours, int minutes, int seconds, char* words, size_t length) {
-  static char past_to[5];
+  // Needs to hold "past " (6 incl. NUL) or "to " (4) — upstream undersized this.
+  static char past_to[6];
   size_t remaining = length;
   memset(words, 0, length);
   //APP_LOG(APP_LOG_LEVEL_DEBUG, "INITIAL minutes: %d", minutes);

@@ -18,6 +18,7 @@
     "companyName": "Gloompirate",
     "longName": "Wristquake",
     "projectType": "native",
+    "sdkVersion": "3",
     "resources": {
         "media": []
     },
