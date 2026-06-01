@@ -115,12 +115,22 @@ function locationError(err) {
 }
 
 function readyCallback(event) {
+  console.log("Wristquake JS ready");
   isReady = true;
-  var callback;
   while (callbacks.length > 0) {
-    callback = callbacks.shift();
-    callback(event);
-  window.navigator.geolocation.getCurrentPosition(locationSuccess, locationError, locationOptions);
+    try { callbacks.shift()(event); } catch (e) { console.log("ready callback error: " + e); }
+  }
+  // Kick off an initial weather fetch once JS is up. Without this, the
+  // first reveal-on-shake stays weather-less until the C side ticks the
+  // 15-minute weather interval.
+  if (window.navigator && window.navigator.geolocation) {
+    try {
+      window.navigator.geolocation.getCurrentPosition(locationSuccess, locationError, locationOptions);
+    } catch (e) {
+      console.log("geolocation throw: " + e);
+    }
+  } else {
+    console.log("no geolocation API available");
   }
 }
 
@@ -134,25 +144,26 @@ function setOptions(options) {
   localStorage.setItem("options", options);
 }
 
-// Takes a string containing serialized JSON as input.  This is the
-// format that is sent back from the configuration web UI.  Produces
-// a JSON message to send to the watch face.
+// Takes a string containing serialized JSON as input.  Returns an
+// appmessage payload for the watch — only includes keys whose source
+// values resolve to a valid int/string. Undefined values are skipped
+// because Pebble.sendAppMessage can wedge the JS engine on them, which
+// then breaks settings page loading, weather fetches, and the
+// double-tap refresh round-trip.
 function prepareConfiguration(serialized_settings) {
-  var settings = JSON.parse(serialized_settings);
-  // appKey 8 = CONF_SHOWSTEPS. Defaults on so Wristquake's step display is
-  // visible out of the box when running against the original upstream config
-  // page (which has no show_steps checkbox). Override by setting
-  // `show_steps: false` in localStorage or via a future Clay config UI.
-  var showSteps = (typeof settings.show_steps === 'undefined') ? 1
-                : (settings.show_steps ? 1 : 0);
-  return {
-    "0": alignment[settings.text_align],
+  var settings = {};
+  try { settings = JSON.parse(serialized_settings) || {}; } catch (_) { settings = {}; }
+
+  var msg = {
+    // Always-defined booleans.
     "1": settings.bluetooth ? 1 : 0,
-    "2": weather[settings.weather],
-    "6": temp_unit[settings.temp_unit],
-    "7": style[settings.text_style],
-    "8": showSteps
+    "8": (typeof settings.show_steps === 'undefined') ? 1 : (settings.show_steps ? 1 : 0)
   };
+  if (alignment.hasOwnProperty(settings.text_align))   msg["0"] = alignment[settings.text_align];
+  if (weather.hasOwnProperty(settings.weather))        msg["2"] = weather[settings.weather];
+  if (temp_unit.hasOwnProperty(settings.temp_unit))    msg["6"] = temp_unit[settings.temp_unit];
+  if (style.hasOwnProperty(settings.text_style))       msg["7"] = style[settings.text_style];
+  return msg;
 }
 
 // Takes a JSON message as input.  Sends the message to the watch.
@@ -168,14 +179,19 @@ function logError(event) {
 
 
 function showConfiguration(event) {
-    var opts = getOptions();
-    // Wristquake config page lives in this repo under /docs and is served
-    // via GitHub Pages over HTTPS. Moved off the upstream zecoj.github.io
-    // page so we can add new appKeys (showSteps) and not depend on an
-    // HTTP-only host the Pebble app may block.
-    var url  = "https://gloompirate.github.io/pebble-wristquake/";
-    console.log(opts);
-    Pebble.openURL(url + "#options=" + encodeURIComponent(opts));
+    // Self-contained — does not depend on any other JS init succeeding.
+    // The rePebble app fires "showConfiguration" when the user taps the
+    // gear icon; if our handler doesn't call Pebble.openURL the app sits
+    // forever on "loading watchface".
+    var url = "https://gloompirate.github.io/pebble-wristquake/";
+    var opts = "{}";
+    try { opts = localStorage.getItem("options") || "{}"; } catch (_) {}
+    try {
+      console.log("Wristquake showConfiguration -> " + url);
+      Pebble.openURL(url + "#options=" + encodeURIComponent(opts));
+    } catch (e) {
+      console.log("openURL threw: " + e);
+    }
 }
 
 function webviewclosed(event) {
@@ -204,8 +220,20 @@ function webviewclosed(event) {
 }
 
 function appmessage(event) {
-  if(!isFetching)window.navigator.geolocation.getCurrentPosition(locationSuccess, locationError, locationOptions);
-  console.log("message!");
+  // The watch fires app_message_outbox_send on the minute-tick weather
+  // interval and on the second tap of a double-tap reveal. Re-fetch
+  // weather here so those actions actually do something.
+  console.log("Wristquake appmessage");
+  if (isFetching) return;
+  if (!window.navigator || !window.navigator.geolocation) {
+    console.log("appmessage: no geolocation API");
+    return;
+  }
+  try {
+    window.navigator.geolocation.getCurrentPosition(locationSuccess, locationError, locationOptions);
+  } catch (e) {
+    console.log("appmessage: geolocation throw " + e);
+  }
 }
 
 function onReady(callback) {
