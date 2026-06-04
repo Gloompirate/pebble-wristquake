@@ -69,7 +69,8 @@ typedef struct {
 typedef struct {
   // Fits "HH:MM · Rain 100°C" with headroom (HR moved to its own bottom-row slot).
   char  topbar[32];
-  char  bottombarL[10];
+  // "wed 31/12" + NUL = 10 bytes worst case; 12 gives headroom.
+  char  bottombarL[12];
   // Icon now lives left of the text in its own BitmapLayer, so the text
   // itself is just the digit string; 8 chars covers up to "9999999".
   char  bottombarC[8];
@@ -97,6 +98,12 @@ static GBitmap *icon_battery_bmp = NULL;
 static BitmapLayer *icon_steps_layer = NULL;
 static BitmapLayer *icon_heart_layer = NULL;
 static BitmapLayer *icon_battery_layer = NULL;
+// Time-of-day fonts. On emery we load a 48-px custom Roboto for noticeably
+// bigger words; on smaller screens we fall back to the system BITHAM_42.
+// row_height_actual tracks line spacing for the chosen font.
+static GFont time_font_light = NULL;
+static GFont time_font_bold = NULL;
+static int row_height_actual = ROW_HEIGHT;
 
 static AppTimer *shake_timeout = NULL;
 
@@ -201,8 +208,11 @@ void info_lines(char *load_status) {
   }
 #endif
 
-  strcpy(status_bars.bottombarL, "");
-  strftime(status_bars.bottombarL, sizeof(status_bars.bottombarL), "%a %e", t);
+  // Date: short day name + d/m (no zero padding) — e.g. "mon 4/6", "wed 31/12".
+  char day_name[6];
+  strftime(day_name, sizeof(day_name), "%a", t);
+  snprintf(status_bars.bottombarL, sizeof(status_bars.bottombarL),
+           "%s %d/%d", day_name, t->tm_mday, t->tm_mon + 1);
   snprintf(status_bars.bottombarR, sizeof(status_bars.bottombarR), "%d%%", charge_state.charge_percent);
 
   // Center slot: step count. The steps icon sits left of this text in its
@@ -496,7 +506,7 @@ static bool needToUpdateLine(Line *line, char *nextValue)
 // Configure bold line of text
 static void configureBoldLayer(TextLayer *textlayer)
 {
-  text_layer_set_font(textlayer, fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD));
+  text_layer_set_font(textlayer, time_font_bold);
   text_layer_set_text_color(textlayer, GColorWhite);
   text_layer_set_background_color(textlayer, GColorClear);
   text_layer_set_text_alignment(textlayer, lookup_text_alignment(text_align));
@@ -505,7 +515,7 @@ static void configureBoldLayer(TextLayer *textlayer)
 // Configure light line of text
 static void configureLightLayer(TextLayer *textlayer)
 {
-  text_layer_set_font(textlayer, fonts_get_system_font(FONT_KEY_BITHAM_42_LIGHT));
+  text_layer_set_font(textlayer, time_font_light);
   text_layer_set_text_color(textlayer, GColorWhite);
   text_layer_set_background_color(textlayer, GColorClear);
   text_layer_set_text_alignment(textlayer, lookup_text_alignment(text_align));
@@ -536,15 +546,19 @@ static int configureLayersForText(char text[NUM_LINES][BUFFER_SIZE], char format
   }
   numLines = i;
 
-  // Calculate y position of top Line
-  int ypos = (screen_h - numLines * ROW_HEIGHT) / 2 - TOP_MARGIN;
+  // Calculate y position of top Line. row_height_actual is set in window_load
+  // based on the chosen time font (~46 on emery with the 48px Roboto, 37 on
+  // smaller screens with BITHAM_42).
+  int ypos = (screen_h - numLines * row_height_actual) / 2 - TOP_MARGIN;
 
   // Set y positions for the lines. Lines start off-screen to the right (x = screen_w);
-  // the slide-in animation moves them to x = 0.
+  // the slide-in animation moves them to x = 0. Frame height tracks row_height_actual
+  // so larger fonts get proportionally taller text layers.
+  const int16_t line_h = row_height_actual + 8;
   for (int i = 0; i < numLines; i++)
   {
-    layer_set_frame((Layer *)lines[i].nextLayer, GRect(screen_w, ypos, screen_w, 50));
-    ypos += ROW_HEIGHT;
+    layer_set_frame((Layer *)lines[i].nextLayer, GRect(screen_w, ypos, screen_w, line_h));
+    ypos += row_height_actual;
   }
 
   return numLines;
@@ -682,9 +696,12 @@ static void handle_minute_tick(struct tm *tick_time, TimeUnits units_changed)
 
 static void init_line(Line* line)
 {
-  // Create layers with dummy position to the right of the screen
-  line->currentLayer = text_layer_create(GRect(screen_w, 0, screen_w, 50));
-  line->nextLayer = text_layer_create(GRect(screen_w, 0, screen_w, 50));
+  // Create layers with dummy position to the right of the screen. Height
+  // tracks row_height_actual so the layer is tall enough for whatever font
+  // was picked at window_load.
+  const int16_t line_h = row_height_actual + 8;
+  line->currentLayer = text_layer_create(GRect(screen_w, 0, screen_w, line_h));
+  line->nextLayer = text_layer_create(GRect(screen_w, 0, screen_w, line_h));
 
   // Configure a style
   configureLightLayer(line->currentLayer);
@@ -739,16 +756,30 @@ static void window_load(Window *window)
   }
   
   /////////////////////////////////////////////////ZECOJ/////////////////////////////////////////////////
-  // Status bars: pinned to top edge (topbar) and bottom edge (4 slots) of
-  // whatever screen we're on. Bar geometry and font scale up on emery
-  // (200x228) — the 144x168 sizing was unreadably small there.
+  // Pick the time-of-day font + its row height. Emery loads our custom 48-px
+  // Roboto (only loaded on this platform via targetPlatforms in appinfo.json);
+  // every other platform stays on the system BITHAM_42 it shipped with.
   const bool big = (screen_h >= 200);
-  const char *bar_font_key = big ? FONT_KEY_GOTHIC_18 : FONT_KEY_GOTHIC_14;
+#if defined(PBL_PLATFORM_EMERY)
+  if (big) {
+    time_font_light = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_ROBOTO_LIGHT_48));
+    time_font_bold  = fonts_load_custom_font(resource_get_handle(RESOURCE_ID_FONT_ROBOTO_BOLD_48));
+    row_height_actual = 46;
+  }
+#endif
+  if (time_font_light == NULL) time_font_light = fonts_get_system_font(FONT_KEY_BITHAM_42_LIGHT);
+  if (time_font_bold  == NULL) time_font_bold  = fonts_get_system_font(FONT_KEY_BITHAM_42_BOLD);
+
+  // Status bars: dropped from GOTHIC_18 to GOTHIC_14_BOLD on emery so the
+  // longer "wed 31/12" date fits without crowding the steps/HR/battery slots.
+  // The watchface text is now bigger, so the secondary row staying readable
+  // at a smaller size is the right trade.
+  const char *bar_font_key = big ? FONT_KEY_GOTHIC_14_BOLD : FONT_KEY_GOTHIC_14;
   GFont bar_font = fonts_get_system_font(bar_font_key);
-  const int16_t BAR_H = big ? 22 : 15;
-  const int16_t BAR_TOP_H = big ? 22 : 16;
-  const int16_t BAR_TOP_Y = big ? 0 : -4;
-  const int16_t BT_W = big ? 22 : 14;
+  const int16_t BAR_H = big ? 17 : 15;
+  const int16_t BAR_TOP_H = big ? 17 : 16;
+  const int16_t BAR_TOP_Y = big ? -2 : -4;
+  const int16_t BT_W = big ? 18 : 14;
   // 12x12 icons, vertically centered inside the bar with a small left pad
   // and gap before their text.
   const int16_t ICON_SZ = 12;
@@ -758,12 +789,13 @@ static void window_load(Window *window)
   const int16_t ICON_Y = screen_h - BAR_H + (BAR_H - ICON_SZ) / 2;
 
   // Bottom-row slot widths: date | steps | HR | battery.
+  // L_W widened to fit "wed 31/12" (worst case for the new "%a %d/%m" format).
   // The HR slot collapses to 0 on small screens since there's no room and
   // the small-watch platforms (aplite/basalt/diorite) don't have an HRM
   // anyway. Slot widths total to screen_w exactly.
-  const int16_t L_W = big ? 50 : 45;          // date
-  const int16_t C_W = big ? 52 : (screen_w - L_W - 48); // steps slot
-  const int16_t HR_W = big ? 42 : 0;          // HR slot (zero-width on small)
+  const int16_t L_W = big ? 70 : 56;          // date "wed 31/12"
+  const int16_t C_W = big ? 50 : (screen_w - L_W - 48); // steps slot
+  const int16_t HR_W = big ? 36 : 0;          // HR slot (zero-width on small)
   const int16_t R_W = screen_w - L_W - C_W - HR_W;     // battery, fills remainder
   const int16_t C_X  = L_W;
   const int16_t HR_X = L_W + C_W;
@@ -891,6 +923,12 @@ static void window_unload(Window *window)
   if (icon_steps_bmp)   gbitmap_destroy(icon_steps_bmp);
   if (icon_heart_bmp)   gbitmap_destroy(icon_heart_bmp);
   if (icon_battery_bmp) gbitmap_destroy(icon_battery_bmp);
+#if defined(PBL_PLATFORM_EMERY)
+  // Only the custom-loaded GFonts need unloading; system fonts are owned by
+  // the SDK and must not be passed to fonts_unload_custom_font.
+  if (time_font_light) { fonts_unload_custom_font(time_font_light); time_font_light = NULL; }
+  if (time_font_bold)  { fonts_unload_custom_font(time_font_bold);  time_font_bold  = NULL; }
+#endif
 
   for (int i = 0; i < NUM_LINES; i++)
   {
